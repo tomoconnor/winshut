@@ -1,6 +1,6 @@
-winshut
+./winshut
 winshut.exe
-winshut-client
+./winshut-client
 winshut-client.yml
 dist/
 certs/
