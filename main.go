@@ -13,12 +13,30 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 )
 
+type serverConfig struct {
+	Addr     string
+	CertFile string
+	KeyFile  string
+	CAFile   string
+	DryRun   bool
+}
+
 func main() {
+	// Subcommand dispatch (before flag parsing)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install":
+			serviceInstall(os.Args[2:])
+			return
+		case "remove":
+			serviceRemove()
+			return
+		}
+	}
+
 	addr := flag.String("addr", ":9090", "listen address")
 	certFile := flag.String("cert", "", "TLS certificate file (required)")
 	keyFile := flag.String("key", "", "TLS private key file (required)")
@@ -32,51 +50,69 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Build TLS config
-	caCert, err := os.ReadFile(*caFile)
+	cfg := serverConfig{
+		Addr:     *addr,
+		CertFile: *certFile,
+		KeyFile:  *keyFile,
+		CAFile:   *caFile,
+		DryRun:   *dryRun,
+	}
+
+	server, err := buildServer(cfg)
 	if err != nil {
-		log.Fatalf("failed to read CA file: %v", err)
+		log.Fatalf("failed to build server: %v", err)
+	}
+
+	if err := runService(cfg, server); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}
+
+func buildServer(cfg serverConfig) (*http.Server, error) {
+	caCert, err := os.ReadFile(cfg.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CA file: %w", err)
 	}
 	caPool := x509.NewCertPool()
 	if !caPool.AppendCertsFromPEM(caCert) {
-		log.Fatal("failed to parse CA certificate")
+		return nil, fmt.Errorf("failed to parse CA certificate")
 	}
 
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		ClientCAs:  caPool,
-		ClientAuth: tls.VerifyClientCertIfGiven,
+		ClientAuth: tls.RequireAndVerifyClientCert,
 	}
 
-	// Set up routes
 	mux := http.NewServeMux()
-
 	mux.Handle("/health", http.HandlerFunc(healthHandler))
 	mux.Handle("/stats", http.HandlerFunc(statsHandler))
-	mux.Handle("/shutdown", authMiddleware(powerHandler("shutdown", *dryRun)))
-	mux.Handle("/restart", authMiddleware(powerHandler("restart", *dryRun)))
-	mux.Handle("/hibernate", authMiddleware(powerHandler("hibernate", *dryRun)))
-	mux.Handle("/sleep", authMiddleware(powerHandler("sleep", *dryRun)))
-	mux.Handle("/lock", authMiddleware(powerHandler("lock", *dryRun)))
-	mux.Handle("/logoff", authMiddleware(powerHandler("logoff", *dryRun)))
-	mux.Handle("/screen-off", authMiddleware(powerHandler("screen-off", *dryRun)))
+	mux.Handle("/shutdown", authMiddleware(powerHandler("shutdown", cfg.DryRun)))
+	mux.Handle("/restart", authMiddleware(powerHandler("restart", cfg.DryRun)))
+	mux.Handle("/hibernate", authMiddleware(powerHandler("hibernate", cfg.DryRun)))
+	mux.Handle("/sleep", authMiddleware(powerHandler("sleep", cfg.DryRun)))
+	mux.Handle("/lock", authMiddleware(powerHandler("lock", cfg.DryRun)))
+	mux.Handle("/logoff", authMiddleware(powerHandler("logoff", cfg.DryRun)))
+	mux.Handle("/screen-off", authMiddleware(powerHandler("screen-off", cfg.DryRun)))
 
-	server := &http.Server{
-		Addr:         *addr,
-		Handler:      mux,
-		TLSConfig:    tlsConfig,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	return &http.Server{
+		Addr:           cfg.Addr,
+		Handler:        mux,
+		TLSConfig:      tlsConfig,
+		ReadTimeout:    15 * time.Second,
+		WriteTimeout:   15 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 4096,
+	}, nil
+}
 
-	// Graceful shutdown
+func runInteractive(cfg serverConfig, server *http.Server) error {
 	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
+	signalNotify(done)
 
 	go func() {
-		log.Printf("starting winshut on %s (dry-run=%v)", *addr, *dryRun)
-		if err := server.ListenAndServeTLS(*certFile, *keyFile); err != http.ErrServerClosed {
+		log.Printf("starting winshut on %s (dry-run=%v)", cfg.Addr, cfg.DryRun)
+		if err := server.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile); err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
@@ -88,7 +124,8 @@ func main() {
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("shutdown error: %v", err)
+		return fmt.Errorf("shutdown error: %w", err)
 	}
 	log.Println("stopped")
+	return nil
 }

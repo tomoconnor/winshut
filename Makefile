@@ -63,17 +63,19 @@ dev-certs: ## Generate dev CA, server, and client certs
 	openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
 		-keyout certs/server.key -out certs/server.csr -nodes \
 		-subj "/CN=winshut" 2>/dev/null; \
-	printf "[SAN]\nsubjectAltName=@alt_names\n[alt_names]\n$$SAN_EXT" > certs/san.cnf; \
+	printf "[server_ext]\nkeyUsage = digitalSignature\nextendedKeyUsage = serverAuth\nsubjectAltName = @alt_names\n[alt_names]\n$$SAN_EXT" > certs/server.cnf; \
 	openssl x509 -req -in certs/server.csr -CA certs/ca.crt -CAkey certs/ca.key \
 		-CAcreateserial -out certs/server.crt -days 365 \
-		-extensions SAN -extfile certs/san.cnf 2>/dev/null; \
+		-extensions server_ext -extfile certs/server.cnf 2>/dev/null; \
 	echo "Generating client cert..."; \
 	openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
 		-keyout certs/client.key -out certs/client.csr -nodes \
 		-subj "/CN=winshut-client" 2>/dev/null; \
+	printf "[client_ext]\nkeyUsage = digitalSignature\nextendedKeyUsage = clientAuth\n" > certs/client.cnf; \
 	openssl x509 -req -in certs/client.csr -CA certs/ca.crt -CAkey certs/ca.key \
-		-CAcreateserial -out certs/client.crt -days 365 2>/dev/null; \
-	rm -f certs/server.csr certs/client.csr certs/ca.srl certs/san.cnf; \
+		-CAcreateserial -out certs/client.crt -days 365 \
+		-extensions client_ext -extfile certs/client.cnf 2>/dev/null; \
+	rm -f certs/server.csr certs/client.csr certs/ca.srl certs/server.cnf certs/client.cnf; \
 	echo "Certs written to certs/ (ca, server, client)"
 
 package: build-windows build-client-all dev-certs ## Package with public certs only
@@ -87,4 +89,4 @@ package-insecure: build-windows build-client-all dev-certs ## Package with all c
 	@echo "Created winshut.zip (includes private keys!)"
 
 dev: build dev-certs ## Run server locally with dry-run mode
-	./$(BINARY) --cert certs/server.crt --key certs/server.key --ca certs/ca.crt --dry-run
+	./$(BINARY) --addr 127.0.0.1:9090 --cert certs/server.crt --key certs/server.key --ca certs/ca.crt --dry-run

@@ -24,6 +24,12 @@ make build
 make build-client
 ```
 
+**All client platforms (linux/darwin/windows, amd64/arm64):**
+
+```bash
+make build-client-all
+```
+
 ## Certificate Generation
 
 WinShut requires mTLS. You need a CA, server cert, and client cert.
@@ -42,8 +48,8 @@ Enter SANs (comma-separated hostnames/IPs, e.g. mypc.local,192.168.1.100): mypc.
 
 This generates all files in `certs/`:
 - `ca.crt` / `ca.key` - CA certificate and key
-- `server.crt` / `server.key` - server TLS cert with your SANs
-- `client.crt` / `client.key` - client cert for mTLS
+- `server.crt` / `server.key` - server TLS cert with your SANs (EKU: serverAuth)
+- `client.crt` / `client.key` - client cert for mTLS (EKU: clientAuth)
 
 **Manual production certs:**
 
@@ -57,22 +63,45 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
   -keyout server.key -out server.csr -nodes \
   -subj "/CN=mypc.local"
+
+cat > server.cnf <<EOF
+[server_ext]
+keyUsage = digitalSignature
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:mypc.local,IP:192.168.1.100
+EOF
+
 openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
   -CAcreateserial -out server.crt -days 365 \
-  -extfile <(printf "subjectAltName=DNS:mypc.local,IP:192.168.1.100")
+  -extensions server_ext -extfile server.cnf
 
 # Client cert (for mTLS)
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
   -keyout client.key -out client.csr -nodes \
   -subj "/CN=winshut-client"
+
+cat > client.cnf <<EOF
+[client_ext]
+keyUsage = digitalSignature
+extendedKeyUsage = clientAuth
+EOF
+
 openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key \
-  -CAcreateserial -out client.crt -days 365
+  -CAcreateserial -out client.crt -days 365 \
+  -extensions client_ext -extfile client.cnf
+
+# Clean up
+rm -f server.csr client.csr server.cnf client.cnf ca.srl
 ```
 
 ## Server Usage
 
 ```
-winshut --cert server.crt --key server.key --ca ca.crt [options]
+winshut [command] [options]
+
+Commands:
+  install    Install as a Windows service (Windows only)
+  remove     Remove the Windows service (Windows only)
 
 Options:
   --addr     Listen address (default: :9090)
@@ -82,6 +111,8 @@ Options:
   --dry-run  Log commands without executing
 ```
 
+Use `--addr` to bind to a specific interface, e.g. `--addr 192.168.1.100:9090`.
+
 **Run locally for development:**
 
 ```bash
@@ -90,23 +121,25 @@ make dev
 
 ## API
 
-| Method | Path          | Auth | Description                |
-|--------|---------------|------|----------------------------|
-| GET    | `/health`     | No   | Liveness check             |
-| GET    | `/stats`      | No   | CPU, memory, and uptime    |
-| POST   | `/shutdown`   | mTLS | Immediate shutdown         |
-| POST   | `/restart`    | mTLS | Immediate restart          |
-| POST   | `/hibernate`  | mTLS | Hibernate                  |
-| POST   | `/sleep`      | mTLS | Sleep (suspend to RAM)     |
-| POST   | `/lock`       | mTLS | Lock workstation           |
-| POST   | `/logoff`     | mTLS | Log off current user       |
-| POST   | `/screen-off` | mTLS | Turn off monitor(s)        |
+All endpoints require a valid mTLS client certificate.
+
+| Method | Path          | Description                |
+|--------|---------------|----------------------------|
+| GET    | `/health`     | Liveness check             |
+| GET    | `/stats`      | CPU, memory, and uptime    |
+| POST   | `/shutdown`   | Immediate shutdown         |
+| POST   | `/restart`    | Immediate restart          |
+| POST   | `/hibernate`  | Hibernate                  |
+| POST   | `/sleep`      | Sleep (suspend to RAM)     |
+| POST   | `/lock`       | Lock workstation           |
+| POST   | `/logoff`     | Log off current user       |
+| POST   | `/screen-off` | Turn off monitor(s)        |
 
 All power endpoints return a JSON response before executing the command (500ms delay).
 
 ## CLI Client
 
-A cross-platform CLI client for interacting with the winshut server from Linux/macOS.
+A cross-platform CLI client for interacting with the winshut server.
 
 **Config file** (`winshut-client.yml` in current directory by default):
 
@@ -142,26 +175,30 @@ The client warns if the config file has loose permissions (should be `chmod 600`
 
 ## curl Examples
 
-All examples use `--cacert` to verify the server's TLS certificate and `--cert`/`--key` for mTLS client authentication.
+All examples require `--cacert` for server verification and `--cert`/`--key` for mTLS client authentication.
 
 **Shutdown:**
 
 ```bash
 curl --cacert certs/ca.crt \
   --cert certs/client.crt --key certs/client.key \
-  -X POST https://localhost:9090/shutdown
+  -X POST https://mypc.local:9090/shutdown
 ```
 
-**Health check (no auth required):**
+**Health check:**
 
 ```bash
-curl --cacert certs/ca.crt https://localhost:9090/health
+curl --cacert certs/ca.crt \
+  --cert certs/client.crt --key certs/client.key \
+  https://mypc.local:9090/health
 ```
 
-**System stats (no auth required):**
+**System stats:**
 
 ```bash
-curl --cacert certs/ca.crt https://localhost:9090/stats
+curl --cacert certs/ca.crt \
+  --cert certs/client.crt --key certs/client.key \
+  https://mypc.local:9090/stats
 ```
 
 Returns:
@@ -198,13 +235,46 @@ make package-insecure
 New-NetFirewallRule -DisplayName "WinShut" -Direction Inbound -LocalPort 9090 -Protocol TCP -Action Allow
 ```
 
-### Auto-Start with Task Scheduler
+### Windows Service
 
+WinShut can run as a native Windows service with Event Viewer logging.
+
+**Install the service:**
+
+```powershell
+winshut.exe install --cert C:\winshut\server.crt --key C:\winshut\server.key --ca C:\winshut\ca.crt
 ```
-schtasks /create /sc onstart /tn "WinShut" /tr "C:\winshut\winshut.exe --cert C:\winshut\server.crt --key C:\winshut\server.key --ca C:\winshut\ca.crt" /ru SYSTEM /rl HIGHEST
+
+Flags passed after `install` are stored as the service's startup arguments. The service is configured to start automatically on boot.
+
+**Start / stop:**
+
+```powershell
+sc start WinShut
+sc stop WinShut
 ```
+
+**Remove the service:**
+
+```powershell
+winshut.exe remove
+```
+
+**Event Viewer:** Logs appear in the Application log under source "WinShut".
 
 Place `winshut.exe` and cert files in `C:\winshut\` (or adjust paths).
+
+**Note:** Running as SYSTEM works for shutdown, restart, hibernate, sleep, and screen-off. However, `/lock` and `/logoff` affect the interactive console session and may not work correctly from a SYSTEM service. If you need those commands, run winshut under the interactive user account instead of SYSTEM.
+
+## Certificate Rotation
+
+Dev certs generated by `make dev-certs` expire after 365 days (CA after 10 years). To rotate:
+
+1. Re-run `make dev-certs` to generate a fresh set
+2. Copy the new `server.crt` and `server.key` to the Windows machine and restart winshut
+3. Copy the new `client.crt`, `client.key`, and `ca.crt` to your client machine
+
+The server reads certs at startup, so it must be restarted to pick up new certs. The CA key is only needed for signing — it doesn't need to be on the server or client machines in production.
 
 ## License
 
