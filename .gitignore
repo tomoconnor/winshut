@@ -1,0 +1,10 @@
+winshut
+winshut.exe
+winshut-client
+winshut-client.yml
+certs/
+*.pem
+*.key
+*.crt
+*.csr
+*.zip
