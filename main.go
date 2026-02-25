@@ -25,6 +25,15 @@ type serverConfig struct {
 }
 
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [command] [options]\n\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "Commands:")
+		fmt.Fprintln(os.Stderr, "  install    Install as a Windows service (flags are stored as service args)")
+		fmt.Fprintln(os.Stderr, "  remove     Remove the Windows service")
+		fmt.Fprintln(os.Stderr, "\nOptions:")
+		flag.PrintDefaults()
+	}
+
 	// Subcommand dispatch (before flag parsing)
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -43,6 +52,13 @@ func main() {
 	caFile := flag.String("ca", "", "CA certificate for mTLS client verification (required)")
 	dryRun := flag.Bool("dry-run", false, "log commands without executing")
 	flag.Parse()
+
+	// Catch subcommands placed after flags (e.g. winshut --cert ... install)
+	if arg := flag.Arg(0); arg == "install" || arg == "remove" {
+		fmt.Fprintf(os.Stderr, "error: %q must be the first argument\n", arg)
+		fmt.Fprintf(os.Stderr, "usage: %s %s [options]\n", os.Args[0], arg)
+		os.Exit(1)
+	}
 
 	if *certFile == "" || *keyFile == "" || *caFile == "" {
 		fmt.Fprintln(os.Stderr, "error: --cert, --key, and --ca are required")
