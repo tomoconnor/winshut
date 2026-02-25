@@ -229,6 +229,14 @@ make package-insecure
 
 ## Windows Setup
 
+### Windows Defender Exclusion
+
+Unsigned Go binaries may trigger a false positive in Windows Defender. Exclude the install directory:
+
+```powershell
+Add-MpPreference -ExclusionPath "C:\winshut"
+```
+
 ### Firewall Rule
 
 ```powershell
