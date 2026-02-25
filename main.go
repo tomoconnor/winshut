@@ -11,17 +11,20 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
 type serverConfig struct {
-	Addr     string
-	CertFile string
-	KeyFile  string
-	CAFile   string
-	DryRun   bool
+	Addr       string
+	CertFile   string
+	KeyFile    string
+	CAFile     string
+	AllowCIDRs string
+	DryRun     bool
 }
 
 func main() {
@@ -46,10 +49,11 @@ func main() {
 		}
 	}
 
-	addr := flag.String("addr", ":9090", "listen address")
+	addr := flag.String("addr", "127.0.0.1:9090", "listen address")
 	certFile := flag.String("cert", "", "TLS certificate file (required)")
 	keyFile := flag.String("key", "", "TLS private key file (required)")
 	caFile := flag.String("ca", "", "CA certificate for mTLS client verification (required)")
+	allowCIDRs := flag.String("allow", "", "allowed client CIDRs, comma-separated (e.g. 192.168.1.0/24,10.0.0.0/8)")
 	dryRun := flag.Bool("dry-run", false, "log commands without executing")
 	flag.Parse()
 
@@ -67,11 +71,12 @@ func main() {
 	}
 
 	cfg := serverConfig{
-		Addr:     *addr,
-		CertFile: *certFile,
-		KeyFile:  *keyFile,
-		CAFile:   *caFile,
-		DryRun:   *dryRun,
+		Addr:       *addr,
+		CertFile:   *certFile,
+		KeyFile:    *keyFile,
+		CAFile:     *caFile,
+		AllowCIDRs: *allowCIDRs,
+		DryRun:     *dryRun,
 	}
 
 	server, err := buildServer(cfg)
@@ -100,25 +105,41 @@ func buildServer(cfg serverConfig) (*http.Server, error) {
 		ClientAuth: tls.RequireAndVerifyClientCert,
 	}
 
+	// Parse IP allowlist
+	var cidrs []*net.IPNet
+	if cfg.AllowCIDRs != "" {
+		for _, s := range strings.Split(cfg.AllowCIDRs, ",") {
+			_, cidr, err := net.ParseCIDR(strings.TrimSpace(s))
+			if err != nil {
+				return nil, fmt.Errorf("invalid CIDR %q: %w", strings.TrimSpace(s), err)
+			}
+			cidrs = append(cidrs, cidr)
+		}
+	}
+
+	rl := newPowerRateLimiter(0.5, 2) // 1 action per 2s, burst of 2
+
 	mux := http.NewServeMux()
 	mux.Handle("/health", http.HandlerFunc(healthHandler))
-	mux.Handle("/stats", http.HandlerFunc(statsHandler))
-	mux.Handle("/shutdown", authMiddleware(powerHandler("shutdown", cfg.DryRun)))
-	mux.Handle("/restart", authMiddleware(powerHandler("restart", cfg.DryRun)))
-	mux.Handle("/hibernate", authMiddleware(powerHandler("hibernate", cfg.DryRun)))
-	mux.Handle("/sleep", authMiddleware(powerHandler("sleep", cfg.DryRun)))
-	mux.Handle("/lock", authMiddleware(powerHandler("lock", cfg.DryRun)))
-	mux.Handle("/logoff", authMiddleware(powerHandler("logoff", cfg.DryRun)))
-	mux.Handle("/screen-off", authMiddleware(powerHandler("screen-off", cfg.DryRun)))
+	mux.Handle("/stats", authMiddleware(http.HandlerFunc(statsHandler)))
+	for _, action := range []string{"shutdown", "restart", "hibernate", "sleep", "lock", "logoff", "screen-off"} {
+		mux.Handle("/"+action, authMiddleware(rl.middleware(powerHandler(action, cfg.DryRun))))
+	}
+
+	var handler http.Handler = mux
+	if len(cidrs) > 0 {
+		handler = allowlistMiddleware(cidrs, mux)
+	}
 
 	return &http.Server{
-		Addr:           cfg.Addr,
-		Handler:        mux,
-		TLSConfig:      tlsConfig,
-		ReadTimeout:    15 * time.Second,
-		WriteTimeout:   15 * time.Second,
-		IdleTimeout:    60 * time.Second,
-		MaxHeaderBytes: 4096,
+		Addr:              cfg.Addr,
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    4096,
 	}, nil
 }
 

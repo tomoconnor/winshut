@@ -9,30 +9,42 @@ package main
 import (
 	"fmt"
 	"os/exec"
+
+	"golang.org/x/sys/windows"
+)
+
+var (
+	user32          = windows.NewLazySystemDLL("user32.dll")
+	procSendMessage = user32.NewProc("SendMessageW")
 )
 
 func execPowerCommand(action string) error {
-	var cmd *exec.Cmd
-
 	switch action {
 	case "shutdown":
-		cmd = exec.Command("shutdown", "/s", "/t", "0")
+		return exec.Command("shutdown", "/s", "/t", "0").Run()
 	case "restart":
-		cmd = exec.Command("shutdown", "/r", "/t", "0")
+		return exec.Command("shutdown", "/r", "/t", "0").Run()
 	case "hibernate":
-		cmd = exec.Command("shutdown", "/h")
+		return exec.Command("shutdown", "/h").Run()
 	case "sleep":
-		cmd = exec.Command("rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0")
+		return exec.Command("rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0").Run()
 	case "lock":
-		cmd = exec.Command("rundll32.exe", "user32.dll,LockWorkStation")
+		return exec.Command("rundll32.exe", "user32.dll,LockWorkStation").Run()
 	case "logoff":
-		cmd = exec.Command("shutdown", "/l")
+		return exec.Command("shutdown", "/l").Run()
 	case "screen-off":
-		cmd = exec.Command("powershell", "-NoProfile", "-Command",
-			`Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class Screen{[DllImport("user32.dll")]static extern IntPtr SendMessage(IntPtr h,uint m,IntPtr w,IntPtr l);public static void Off(){SendMessage((IntPtr)0xFFFF,0x0112,(IntPtr)0xF170,(IntPtr)2);}}'; [Screen]::Off()`)
+		return screenOff()
 	default:
 		return fmt.Errorf("unknown action: %s", action)
 	}
+}
 
-	return cmd.Run()
+func screenOff() error {
+	procSendMessage.Call(
+		0xFFFF,  // HWND_BROADCAST
+		0x0112,  // WM_SYSCOMMAND
+		0xF170,  // SC_MONITORPOWER
+		2,       // MONITOR_OFF
+	)
+	return nil
 }

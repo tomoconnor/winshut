@@ -132,6 +132,11 @@ func serviceInstall(args []string) {
 	}
 
 	fmt.Printf("service %q installed\n", serviceName)
+
+	if err := s.Start(); err != nil {
+		log.Fatalf("failed to start service: %v", err)
+	}
+	fmt.Printf("service %q started\n", serviceName)
 }
 
 func serviceRemove() {
