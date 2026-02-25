@@ -1,25 +1,44 @@
 SHELL := /bin/bash
-.PHONY: build build-windows build-client clean dev package package-insecure
+.PHONY: build build-windows build-client build-client-all clean dev package package-insecure help
+.DEFAULT_GOAL := help
 
 BINARY = winshut
 WINDOWS_BINARY = winshut.exe
 CLIENT_BINARY = winshut-client
+CLIENT_DIR = ./cmd/winshut-client
+DIST_DIR = dist
 
-build:
+LDFLAGS = -s -w
+
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+build: ## Build server for current platform
 	go build -o $(BINARY) .
 
-build-windows:
-	GOOS=windows GOARCH=amd64 go build -o $(WINDOWS_BINARY) -ldflags="-s -w" .
+build-windows: ## Cross-compile server for Windows amd64
+	GOOS=windows GOARCH=amd64 go build -o $(WINDOWS_BINARY) -ldflags="$(LDFLAGS)" .
 
-build-client:
-	go build -o $(CLIENT_BINARY) ./cmd/winshut-client
+build-client: ## Build client for current platform
+	go build -o $(CLIENT_BINARY) $(CLIENT_DIR)
 
-clean:
+build-client-all: ## Cross-compile client for all platforms (linux/mac/windows, amd64/arm64)
+	@mkdir -p $(DIST_DIR)
+	GOOS=linux   GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/winshut-client-linux-amd64       $(CLIENT_DIR)
+	GOOS=linux   GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/winshut-client-linux-arm64       $(CLIENT_DIR)
+	GOOS=darwin  GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/winshut-client-darwin-amd64      $(CLIENT_DIR)
+	GOOS=darwin  GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/winshut-client-darwin-arm64      $(CLIENT_DIR)
+	GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/winshut-client-windows-amd64.exe $(CLIENT_DIR)
+	GOOS=windows GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/winshut-client-windows-arm64.exe $(CLIENT_DIR)
+	@echo "Client binaries written to $(DIST_DIR)/"
+
+clean: ## Remove build artifacts
 	rm -f $(BINARY) $(WINDOWS_BINARY) $(CLIENT_BINARY)
+	rm -rf $(DIST_DIR)
 
 # Generate certs (CA, server, client) for development/testing
 # Prompts for SAN entries (hostnames and IPs for the server cert)
-dev-certs:
+dev-certs: ## Generate dev CA, server, and client certs
 	@mkdir -p certs
 	@read -p "Enter SANs (comma-separated hostnames/IPs, e.g. mypc.local,192.168.1.100): " SANS; \
 	SAN_EXT=""; \
@@ -57,18 +76,15 @@ dev-certs:
 	rm -f certs/server.csr certs/client.csr certs/ca.srl certs/san.cnf; \
 	echo "Certs written to certs/ (ca, server, client)"
 
-# Build and package with public certs only (no private keys)
-package: build-windows build-client dev-certs
+package: build-windows build-client-all dev-certs ## Package with public certs only
 	rm -f winshut.zip
-	zip winshut.zip $(WINDOWS_BINARY) $(CLIENT_BINARY) certs/ca.crt certs/server.crt certs/client.crt
+	zip winshut.zip $(WINDOWS_BINARY) $(DIST_DIR)/winshut-client-* certs/ca.crt certs/server.crt certs/client.crt
 	@echo "Created winshut.zip (public certs only)"
 
-# Build and package with all certs including private keys (for deployment)
-package-insecure: build-windows build-client dev-certs
+package-insecure: build-windows build-client-all dev-certs ## Package with all certs including private keys
 	rm -f winshut.zip
-	zip winshut.zip $(WINDOWS_BINARY) $(CLIENT_BINARY) certs/ca.crt certs/ca.key certs/server.crt certs/server.key certs/client.crt certs/client.key
+	zip winshut.zip $(WINDOWS_BINARY) $(DIST_DIR)/winshut-client-* certs/ca.crt certs/ca.key certs/server.crt certs/server.key certs/client.crt certs/client.key
 	@echo "Created winshut.zip (includes private keys!)"
 
-# Run locally with dry-run mode
-dev: build dev-certs
+dev: build dev-certs ## Run server locally with dry-run mode
 	./$(BINARY) --cert certs/server.crt --key certs/server.key --ca certs/ca.crt --dry-run

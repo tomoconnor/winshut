@@ -2,6 +2,7 @@ winshut
 winshut.exe
 winshut-client
 winshut-client.yml
+dist/
 certs/
 *.pem
 *.key
