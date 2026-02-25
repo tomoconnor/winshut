@@ -5,33 +5,18 @@
 package main
 
 import (
-	"crypto/subtle"
+	"log"
 	"net/http"
-	"strings"
 )
 
-func authMiddleware(token string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check mTLS: if client presented a verified certificate, allow
-			if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 {
-				next.ServeHTTP(w, r)
-				return
-			}
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
 
-			// Check bearer token
-			if token != "" {
-				auth := r.Header.Get("Authorization")
-				if strings.HasPrefix(auth, "Bearer ") {
-					provided := auth[len("Bearer "):]
-					if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1 {
-						next.ServeHTTP(w, r)
-						return
-					}
-				}
-			}
-
-			writeJSON(w, http.StatusUnauthorized, response{Status: "error", Message: "unauthorized"})
-		})
-	}
+		log.Printf("auth failed from %s", r.RemoteAddr)
+		writeJSON(w, http.StatusUnauthorized, response{Status: "error", Message: "unauthorized"})
+	})
 }

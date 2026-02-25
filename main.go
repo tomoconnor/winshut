@@ -22,56 +22,52 @@ func main() {
 	addr := flag.String("addr", ":9090", "listen address")
 	certFile := flag.String("cert", "", "TLS certificate file (required)")
 	keyFile := flag.String("key", "", "TLS private key file (required)")
-	caFile := flag.String("ca", "", "CA certificate for client verification (enables mTLS)")
-	token := flag.String("token", "", "bearer token for Authorization header auth")
+	caFile := flag.String("ca", "", "CA certificate for mTLS client verification (required)")
 	dryRun := flag.Bool("dry-run", false, "log commands without executing")
 	flag.Parse()
 
-	if *certFile == "" || *keyFile == "" {
-		fmt.Fprintln(os.Stderr, "error: --cert and --key are required")
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	if *caFile == "" && *token == "" {
-		fmt.Fprintln(os.Stderr, "error: at least one of --ca or --token must be set")
+	if *certFile == "" || *keyFile == "" || *caFile == "" {
+		fmt.Fprintln(os.Stderr, "error: --cert, --key, and --ca are required")
 		flag.Usage()
 		os.Exit(1)
 	}
 
 	// Build TLS config
-	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS12,
+	caCert, err := os.ReadFile(*caFile)
+	if err != nil {
+		log.Fatalf("failed to read CA file: %v", err)
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caCert) {
+		log.Fatal("failed to parse CA certificate")
 	}
 
-	if *caFile != "" {
-		caCert, err := os.ReadFile(*caFile)
-		if err != nil {
-			log.Fatalf("failed to read CA file: %v", err)
-		}
-		caPool := x509.NewCertPool()
-		if !caPool.AppendCertsFromPEM(caCert) {
-			log.Fatal("failed to parse CA certificate")
-		}
-		tlsConfig.ClientCAs = caPool
-		tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
-		log.Println("mTLS enabled: client certificates will be verified against CA")
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		ClientCAs:  caPool,
+		ClientAuth: tls.VerifyClientCertIfGiven,
 	}
 
 	// Set up routes
 	mux := http.NewServeMux()
-	auth := authMiddleware(*token)
 
 	mux.Handle("/health", http.HandlerFunc(healthHandler))
 	mux.Handle("/stats", http.HandlerFunc(statsHandler))
-	mux.Handle("/shutdown", auth(powerHandler("shutdown", *dryRun)))
-	mux.Handle("/hibernate", auth(powerHandler("hibernate", *dryRun)))
-	mux.Handle("/sleep", auth(powerHandler("sleep", *dryRun)))
+	mux.Handle("/shutdown", authMiddleware(powerHandler("shutdown", *dryRun)))
+	mux.Handle("/restart", authMiddleware(powerHandler("restart", *dryRun)))
+	mux.Handle("/hibernate", authMiddleware(powerHandler("hibernate", *dryRun)))
+	mux.Handle("/sleep", authMiddleware(powerHandler("sleep", *dryRun)))
+	mux.Handle("/lock", authMiddleware(powerHandler("lock", *dryRun)))
+	mux.Handle("/logoff", authMiddleware(powerHandler("logoff", *dryRun)))
+	mux.Handle("/screen-off", authMiddleware(powerHandler("screen-off", *dryRun)))
 
 	server := &http.Server{
-		Addr:      *addr,
-		Handler:   mux,
-		TLSConfig: tlsConfig,
+		Addr:         *addr,
+		Handler:      mux,
+		TLSConfig:    tlsConfig,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	// Graceful shutdown

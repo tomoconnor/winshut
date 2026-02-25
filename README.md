@@ -1,6 +1,6 @@
 # WinShut
 
-Remote Windows power management over HTTPS. Shutdown, hibernate, or sleep a Windows machine via a simple API, secured with mTLS and/or bearer token auth.
+Remote Windows power management over HTTPS. Shutdown, restart, hibernate, sleep, lock, logoff, or turn off the screen on a Windows machine via a simple API, secured with mTLS.
 
 Built because OpenSSH on Windows is unreliable for remote power management.
 
@@ -18,9 +18,15 @@ make build-windows
 make build
 ```
 
+**CLI client (Linux/macOS):**
+
+```bash
+make build-client
+```
+
 ## Certificate Generation
 
-WinShut requires TLS. For production use, generate a CA, server cert, and optionally client certs for mTLS.
+WinShut requires mTLS. You need a CA, server cert, and client cert.
 
 **Dev certs (CA + server + client):**
 
@@ -63,21 +69,18 @@ openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key \
   -CAcreateserial -out client.crt -days 365
 ```
 
-## Usage
+## Server Usage
 
 ```
-winshut --cert server.crt --key server.key [options]
+winshut --cert server.crt --key server.key --ca ca.crt [options]
 
 Options:
   --addr     Listen address (default: :9090)
   --cert     TLS certificate file (required)
   --key      TLS private key file (required)
-  --ca       CA cert for mTLS client verification
-  --token    Bearer token for Authorization header auth
+  --ca       CA cert for mTLS client verification (required)
   --dry-run  Log commands without executing
 ```
-
-At least one of `--ca` or `--token` must be provided (fail-closed).
 
 **Run locally for development:**
 
@@ -87,25 +90,23 @@ make dev
 
 ## API
 
-| Method | Path         | Auth | Description                |
-|--------|--------------|------|----------------------------|
-| POST   | `/shutdown`  | Yes  | Immediate shutdown         |
-| POST   | `/hibernate` | Yes  | Hibernate                  |
-| POST   | `/sleep`     | Yes  | Sleep (suspend to RAM)     |
-| GET    | `/health`    | No   | Liveness check             |
-| GET    | `/stats`     | No   | CPU and memory statistics   |
+| Method | Path          | Auth | Description                |
+|--------|---------------|------|----------------------------|
+| GET    | `/health`     | No   | Liveness check             |
+| GET    | `/stats`      | No   | CPU, memory, and uptime    |
+| POST   | `/shutdown`   | mTLS | Immediate shutdown         |
+| POST   | `/restart`    | mTLS | Immediate restart          |
+| POST   | `/hibernate`  | mTLS | Hibernate                  |
+| POST   | `/sleep`      | mTLS | Sleep (suspend to RAM)     |
+| POST   | `/lock`       | mTLS | Lock workstation           |
+| POST   | `/logoff`     | mTLS | Log off current user       |
+| POST   | `/screen-off` | mTLS | Turn off monitor(s)        |
 
 All power endpoints return a JSON response before executing the command (500ms delay).
 
 ## CLI Client
 
 A cross-platform CLI client for interacting with the winshut server from Linux/macOS.
-
-**Build:**
-
-```bash
-make build-client
-```
 
 **Config file** (`winshut-client.yml` in current directory by default):
 
@@ -114,27 +115,26 @@ server: https://mypc.local:9090
 ca: certs/ca.crt
 cert: certs/client.crt
 key: certs/client.key
-token: SECRET
 ```
 
 - `server` — required, base URL of the winshut server
 - `ca` — optional, CA cert for server verification (uses system roots if omitted)
-- `cert` / `key` — optional, client cert pair for mTLS
-- `token` — optional, bearer token for auth on power commands
+- `cert` / `key` — required, client cert pair for mTLS
+
+The client warns if the config file has loose permissions (should be `chmod 600`).
 
 **Usage:**
 
 ```bash
-# Health check
 ./winshut-client health
-
-# System stats
 ./winshut-client stats
-
-# Power commands (require auth via mTLS and/or token)
 ./winshut-client shutdown
+./winshut-client restart
 ./winshut-client hibernate
 ./winshut-client sleep
+./winshut-client lock
+./winshut-client logoff
+./winshut-client screen-off
 
 # Custom config path
 ./winshut-client --config /path/to/config.yml health
@@ -142,17 +142,9 @@ token: SECRET
 
 ## curl Examples
 
-All examples use `--cacert` to verify the server's TLS certificate against your CA. Without it, you'd need `-k` to skip verification.
+All examples use `--cacert` to verify the server's TLS certificate and `--cert`/`--key` for mTLS client authentication.
 
-**Bearer token auth:**
-
-```bash
-curl --cacert certs/ca.crt -X POST \
-  -H "Authorization: Bearer SECRET" \
-  https://localhost:9090/shutdown
-```
-
-**mTLS auth (no token needed):**
+**Shutdown:**
 
 ```bash
 curl --cacert certs/ca.crt \
@@ -175,13 +167,27 @@ curl --cacert certs/ca.crt https://localhost:9090/stats
 Returns:
 
 ```json
-{"cpu_usage_percent":12,"memory_total_bytes":17179869184,"memory_free_bytes":8589934592,"memory_used_bytes":8589934592}
+{"cpu_usage_percent":12,"memory_total_bytes":17179869184,"memory_free_bytes":8589934592,"memory_used_bytes":8589934592,"uptime_seconds":86400}
 ```
 
 **Response format (power endpoints):**
 
 ```json
 {"status":"ok","action":"shutdown","message":"executing"}
+```
+
+## Packaging
+
+**Safe package (public certs only):**
+
+```bash
+make package
+```
+
+**Full package with private keys (for deployment to target machine):**
+
+```bash
+make package-insecure
 ```
 
 ## Windows Setup
@@ -195,7 +201,11 @@ New-NetFirewallRule -DisplayName "WinShut" -Direction Inbound -LocalPort 9090 -P
 ### Auto-Start with Task Scheduler
 
 ```
-schtasks /create /sc onstart /tn "WinShut" /tr "C:\winshut\winshut.exe --cert C:\winshut\server.crt --key C:\winshut\server.key --ca C:\winshut\ca.crt --token SECRET" /ru SYSTEM /rl HIGHEST
+schtasks /create /sc onstart /tn "WinShut" /tr "C:\winshut\winshut.exe --cert C:\winshut\server.crt --key C:\winshut\server.key --ca C:\winshut\ca.crt" /ru SYSTEM /rl HIGHEST
 ```
 
 Place `winshut.exe` and cert files in `C:\winshut\` (or adjust paths).
+
+## License
+
+This project is licensed under the [Mozilla Public License 2.0](LICENSE).

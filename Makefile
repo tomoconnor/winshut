@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: build build-windows build-client clean dev package
+.PHONY: build build-windows build-client clean dev package package-insecure
 
 BINARY = winshut
 WINDOWS_BINARY = winshut.exe
@@ -57,12 +57,18 @@ dev-certs:
 	rm -f certs/server.csr certs/client.csr certs/ca.srl certs/san.cnf; \
 	echo "Certs written to certs/ (ca, server, client)"
 
-# Build Windows binary, generate certs, and package into a zip
+# Build and package with public certs only (no private keys)
 package: build-windows build-client dev-certs
 	rm -f winshut.zip
+	zip winshut.zip $(WINDOWS_BINARY) $(CLIENT_BINARY) certs/ca.crt certs/server.crt certs/client.crt
+	@echo "Created winshut.zip (public certs only)"
+
+# Build and package with all certs including private keys (for deployment)
+package-insecure: build-windows build-client dev-certs
+	rm -f winshut.zip
 	zip winshut.zip $(WINDOWS_BINARY) $(CLIENT_BINARY) certs/ca.crt certs/ca.key certs/server.crt certs/server.key certs/client.crt certs/client.key
-	@echo "Created winshut.zip"
+	@echo "Created winshut.zip (includes private keys!)"
 
 # Run locally with dry-run mode
 dev: build dev-certs
-	./$(BINARY) --cert certs/server.crt --key certs/server.key --ca certs/ca.crt --token dev --dry-run
+	./$(BINARY) --cert certs/server.crt --key certs/server.key --ca certs/ca.crt --dry-run
